@@ -1,0 +1,757 @@
+/*
+ * Copyright Traceloop
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { type Attributes, context, type Span, SpanKind, trace } from "@opentelemetry/api";
+import {
+  InstrumentationBase,
+  type InstrumentationModuleDefinition,
+  InstrumentationNodeModuleDefinition,
+  safeExecuteInTheMiddle,
+} from "@opentelemetry/instrumentation";
+import {
+  ATTR_GEN_AI_COMPLETION,
+  ATTR_GEN_AI_PROMPT,
+  ATTR_GEN_AI_REQUEST_MAX_TOKENS,
+  ATTR_GEN_AI_REQUEST_MODEL,
+  ATTR_GEN_AI_REQUEST_TEMPERATURE,
+  ATTR_GEN_AI_REQUEST_TOP_P,
+  ATTR_GEN_AI_RESPONSE_MODEL,
+  ATTR_GEN_AI_SYSTEM,
+  ATTR_GEN_AI_USAGE_COMPLETION_TOKENS,
+  ATTR_GEN_AI_USAGE_PROMPT_TOKENS,
+} from "@opentelemetry/semantic-conventions/incubating";
+import {
+  CONTEXT_KEY_ALLOW_TRACE_CONTENT,
+  SpanAttributes,
+} from "@traceloop/ai-semantic-conventions";
+import { encodingForModel, type Tiktoken, type TiktokenModel } from "js-tiktoken";
+import type * as openai from "openai";
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
+  Completion,
+  CompletionChoice,
+  CompletionCreateParamsNonStreaming,
+  CompletionCreateParamsStreaming,
+} from "openai/resources";
+import type { Stream } from "openai/streaming";
+import { version } from "../../package.json";
+import type { OpenAIInstrumentationConfig } from "./types";
+
+// Type definition for APIPromise - compatible with both OpenAI v4 and v5+
+// The actual import is handled at runtime via require() calls in the _wrapPromise method
+type APIPromiseType<T> = Promise<T> & {
+  _thenUnwrap: <U>(onFulfilled: (value: T) => U) => APIPromiseType<U>;
+};
+
+import { wrapImageEdit, wrapImageGeneration, wrapImageVariation } from "./image-wrappers";
+
+export class OpenAIInstrumentation extends InstrumentationBase {
+  protected declare _config: OpenAIInstrumentationConfig;
+
+  constructor(config: OpenAIInstrumentationConfig = {}) {
+    super("overmind-js/openai-instrumentation", version, config);
+  }
+
+  public override setConfig(config: OpenAIInstrumentationConfig = {}) {
+    super.setConfig(config);
+  }
+
+  public manuallyInstrument(module: unknown) {
+    this._diag.debug(`Manually instrumenting openai`);
+
+    const openaiModule = module as any;
+
+    this._wrap(openaiModule.Chat.Completions.prototype, "create", this.patchOpenAI("chat"));
+    this._wrap(openaiModule.Completions.prototype, "create", this.patchOpenAI("completion"));
+
+    if (openaiModule.Images) {
+      this._wrap(
+        openaiModule.Images.prototype,
+        "generate",
+        wrapImageGeneration(this.tracer, this._config.uploadBase64Image, this._config)
+      );
+      this._wrap(
+        openaiModule.Images.prototype,
+        "edit",
+        wrapImageEdit(this.tracer, this._config.uploadBase64Image, this._config)
+      );
+      this._wrap(
+        openaiModule.Images.prototype,
+        "createVariation",
+        wrapImageVariation(this.tracer, this._config.uploadBase64Image, this._config)
+      );
+    }
+  }
+
+  protected init(): InstrumentationModuleDefinition {
+    const module = new InstrumentationNodeModuleDefinition(
+      "openai",
+      [">=4 <6"],
+      this.patch.bind(this),
+      this.unpatch.bind(this)
+    );
+    return module;
+  }
+
+  private patch(moduleExports: typeof openai, moduleVersion?: string) {
+    this._diag.debug(`Patching openai@${moduleVersion}`);
+
+    // Old version of OpenAI API (v3.1.0)
+    if ((moduleExports as any).OpenAIApi) {
+      this._wrap(
+        (moduleExports as any).OpenAIApi.prototype,
+        "createChatCompletion",
+        this.patchOpenAI("chat", "v3")
+      );
+      this._wrap(
+        (moduleExports as any).OpenAIApi.prototype,
+        "createCompletion",
+        this.patchOpenAI("completion", "v3")
+      );
+    } else {
+      this._wrap(
+        moduleExports.OpenAI.Chat.Completions.prototype,
+        "create",
+        this.patchOpenAI("chat")
+      );
+      this._wrap(
+        moduleExports.OpenAI.Completions.prototype,
+        "create",
+        this.patchOpenAI("completion")
+      );
+
+      if (moduleExports.OpenAI.Images) {
+        this._wrap(
+          moduleExports.OpenAI.Images.prototype,
+          "generate",
+          wrapImageGeneration(this.tracer, this._config.uploadBase64Image, this._config)
+        );
+        this._wrap(
+          moduleExports.OpenAI.Images.prototype,
+          "edit",
+          wrapImageEdit(this.tracer, this._config.uploadBase64Image, this._config)
+        );
+        this._wrap(
+          moduleExports.OpenAI.Images.prototype,
+          "createVariation",
+          wrapImageVariation(this.tracer, this._config.uploadBase64Image, this._config)
+        );
+      }
+    }
+    return moduleExports;
+  }
+
+  private unpatch(moduleExports: typeof openai, moduleVersion?: string): void {
+    this._diag.debug(`Unpatching openai@${moduleVersion}`);
+
+    // Old version of OpenAI API (v3.1.0)
+    if ((moduleExports as any).OpenAIApi) {
+      this._unwrap((moduleExports as any).OpenAIApi.prototype, "createChatCompletion");
+      this._unwrap((moduleExports as any).OpenAIApi.prototype, "createCompletion");
+    } else {
+      this._unwrap(moduleExports.OpenAI.Chat.Completions.prototype, "create");
+      this._unwrap(moduleExports.OpenAI.Completions.prototype, "create");
+
+      if (moduleExports.OpenAI.Images) {
+        this._unwrap(moduleExports.OpenAI.Images.prototype, "generate");
+        this._unwrap(moduleExports.OpenAI.Images.prototype, "edit");
+        this._unwrap(moduleExports.OpenAI.Images.prototype, "createVariation");
+      }
+    }
+  }
+
+  private patchOpenAI(type: "chat" | "completion", version: "v3" | "v4" = "v4") {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const plugin = this;
+    // eslint-disable-next-line
+    return (original: Function) => {
+      return function method(this: any, ...args: unknown[]) {
+        const span =
+          type === "chat"
+            ? plugin.startSpan({
+                type,
+                params: args[0] as ChatCompletionCreateParamsNonStreaming & {
+                  extraAttributes?: Record<string, any>;
+                },
+                client: this,
+              })
+            : plugin.startSpan({
+                type,
+                params: args[0] as CompletionCreateParamsNonStreaming & {
+                  extraAttributes?: Record<string, any>;
+                },
+                client: this,
+              });
+
+        const execContext = trace.setSpan(context.active(), span);
+        const execPromise = safeExecuteInTheMiddle(
+          () => {
+            return context.with(execContext, () => {
+              if ((args?.[0] as any)?.extraAttributes) {
+                delete (args[0] as any).extraAttributes;
+              }
+              return original.apply(this, args);
+            });
+          },
+          (e) => {
+            if (e) {
+              plugin._diag.error("OpenAI instrumentation: error", e);
+            }
+          }
+        );
+
+        if (
+          (args[0] as ChatCompletionCreateParamsStreaming | CompletionCreateParamsStreaming).stream
+        ) {
+          return context.bind(
+            execContext,
+            plugin._streamingWrapPromise({
+              span,
+              type,
+              params: args[0] as any,
+              promise: execPromise,
+            })
+          );
+        }
+
+        const wrappedPromise = plugin._wrapPromise(type, version, span, execPromise);
+
+        return context.bind(execContext, wrappedPromise as any);
+      };
+    };
+  }
+
+  private startSpan({
+    type,
+    params,
+    client,
+  }:
+    | {
+        type: "chat";
+        params: ChatCompletionCreateParamsNonStreaming & {
+          extraAttributes?: Record<string, any>;
+        };
+        client: any;
+      }
+    | {
+        type: "completion";
+        params: CompletionCreateParamsNonStreaming & {
+          extraAttributes?: Record<string, any>;
+        };
+        client: any;
+      }): Span {
+    const { provider } = this._detectVendorFromURL(client);
+
+    const attributes: Attributes = {
+      [ATTR_GEN_AI_SYSTEM]: provider,
+      [SpanAttributes.LLM_REQUEST_TYPE]: type,
+    };
+
+    try {
+      attributes[ATTR_GEN_AI_REQUEST_MODEL] = params.model;
+      if (params.max_tokens) {
+        attributes[ATTR_GEN_AI_REQUEST_MAX_TOKENS] = params.max_tokens;
+      }
+      if (params.temperature) {
+        attributes[ATTR_GEN_AI_REQUEST_TEMPERATURE] = params.temperature;
+      }
+      if (params.top_p) {
+        attributes[ATTR_GEN_AI_REQUEST_TOP_P] = params.top_p;
+      }
+      if (params.frequency_penalty) {
+        attributes[SpanAttributes.LLM_FREQUENCY_PENALTY] = params.frequency_penalty;
+      }
+      if (params.presence_penalty) {
+        attributes[SpanAttributes.LLM_PRESENCE_PENALTY] = params.presence_penalty;
+      }
+
+      if (params.extraAttributes !== undefined && typeof params.extraAttributes === "object") {
+        Object.keys(params.extraAttributes).forEach((key: string) => {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          attributes[key] = params.extraAttributes![key];
+        });
+      }
+
+      if (this._shouldSendPrompts()) {
+        if (type === "chat") {
+          params.messages.forEach((message, index) => {
+            attributes[`${ATTR_GEN_AI_PROMPT}.${index}.role`] = message.role;
+            if (typeof message.content === "string") {
+              attributes[`${ATTR_GEN_AI_PROMPT}.${index}.content`] =
+                (message.content as string) || "";
+            } else {
+              attributes[`${ATTR_GEN_AI_PROMPT}.${index}.content`] = JSON.stringify(
+                message.content
+              );
+            }
+          });
+          params.functions?.forEach((func, index) => {
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.name`] = func.name;
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.description`] =
+              func.description;
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.arguments`] =
+              JSON.stringify(func.parameters);
+          });
+          params.tools?.forEach((tool, index) => {
+            if (tool.type !== "function" || !("function" in tool) || !tool.function) {
+              return;
+            }
+
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.name`] =
+              tool.function.name;
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.description`] =
+              tool.function.description;
+            attributes[`${SpanAttributes.LLM_REQUEST_FUNCTIONS}.${index}.arguments`] =
+              JSON.stringify(tool.function.parameters);
+          });
+        } else {
+          attributes[`${ATTR_GEN_AI_PROMPT}.0.role`] = "user";
+          if (typeof params.prompt === "string") {
+            attributes[`${ATTR_GEN_AI_PROMPT}.0.content`] = params.prompt;
+          } else {
+            attributes[`${ATTR_GEN_AI_PROMPT}.0.content`] = JSON.stringify(params.prompt);
+          }
+        }
+      }
+    } catch (e) {
+      this._diag.debug(e);
+      this._config.exceptionLogger?.(e);
+    }
+
+    return this.tracer.startSpan(`openai.${type}`, {
+      kind: SpanKind.CLIENT,
+      attributes,
+    });
+  }
+
+  private async *_streamingWrapPromise({
+    span,
+    type,
+    params,
+    promise,
+  }:
+    | {
+        span: Span;
+        type: "chat";
+        params: ChatCompletionCreateParamsStreaming;
+        promise: APIPromiseType<Stream<ChatCompletionChunk>>;
+      }
+    | {
+        span: Span;
+        params: CompletionCreateParamsStreaming;
+        type: "completion";
+        promise: APIPromiseType<Stream<Completion>>;
+      }) {
+    if (type === "chat") {
+      const result: ChatCompletion = {
+        id: "0",
+        created: -1,
+        model: "",
+        choices: [
+          {
+            index: 0,
+            logprobs: null,
+            finish_reason: "stop",
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [],
+            } as any,
+          },
+        ],
+        object: "chat.completion",
+      };
+      for await (const chunk of await promise) {
+        yield chunk;
+
+        result.id = chunk.id;
+        result.created = chunk.created;
+        result.model = chunk.model;
+
+        if (chunk.choices[0]?.finish_reason) {
+          result.choices[0].finish_reason = chunk.choices[0].finish_reason;
+        }
+        if (chunk.choices[0]?.logprobs) {
+          result.choices[0].logprobs = chunk.choices[0].logprobs;
+        }
+        if (chunk.choices[0]?.delta.content) {
+          result.choices[0].message.content += chunk.choices[0].delta.content;
+        }
+        if (
+          chunk.choices[0]?.delta.function_call &&
+          chunk.choices[0]?.delta.function_call.arguments &&
+          chunk.choices[0]?.delta.function_call.name
+        ) {
+          // I needed to re-build the object so that Typescript will understand that `name` and `argument` are not null.
+          result.choices[0].message.function_call = {
+            name: chunk.choices[0].delta.function_call.name,
+            arguments: chunk.choices[0].delta.function_call.arguments,
+          };
+        }
+        for (const toolCall of chunk.choices[0]?.delta?.tool_calls ?? []) {
+          if ((result.choices[0].message.tool_calls?.length ?? 0) < toolCall.index + 1) {
+            result.choices[0].message.tool_calls?.push({
+              function: {
+                name: "",
+                arguments: "",
+              },
+              id: "",
+              type: "function",
+            });
+          }
+
+          if (result.choices[0].message.tool_calls) {
+            if (toolCall.id) {
+              result.choices[0].message.tool_calls[toolCall.index].id += toolCall.id;
+            }
+            if (toolCall.type) {
+              result.choices[0].message.tool_calls[toolCall.index].type = toolCall.type;
+            }
+            if (toolCall.function?.name) {
+              (result.choices[0].message.tool_calls[toolCall.index] as any).function.name +=
+                toolCall.function.name;
+            }
+            if (toolCall.function?.arguments) {
+              (result.choices[0].message.tool_calls[toolCall.index] as any).function.arguments +=
+                toolCall.function.arguments;
+            }
+          }
+        }
+      }
+
+      if (result.choices[0].logprobs?.content) {
+        this._addLogProbsEvent(span, result.choices[0].logprobs);
+      }
+
+      if (this._config.enrichTokens) {
+        let promptTokens = 0;
+        for (const message of params.messages) {
+          promptTokens += this.tokenCountFromString(message.content as string, result.model) ?? 0;
+        }
+
+        const completionTokens = this.tokenCountFromString(
+          result.choices[0].message.content ?? "",
+          result.model
+        );
+        if (completionTokens) {
+          result.usage = {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          };
+        }
+      }
+
+      this._endSpan({ span, type, result });
+    } else {
+      const result: Completion = {
+        id: "0",
+        created: -1,
+        model: "",
+        choices: [
+          {
+            index: 0,
+            logprobs: null,
+            finish_reason: "stop",
+            text: "",
+          },
+        ],
+        object: "text_completion",
+      };
+      for await (const chunk of await promise) {
+        yield chunk;
+
+        try {
+          result.id = chunk.id;
+          result.created = chunk.created;
+          result.model = chunk.model;
+
+          if (chunk.choices[0]?.finish_reason) {
+            result.choices[0].finish_reason = chunk.choices[0].finish_reason;
+          }
+          if (chunk.choices[0]?.logprobs) {
+            result.choices[0].logprobs = chunk.choices[0].logprobs;
+          }
+          if (chunk.choices[0]?.text) {
+            result.choices[0].text += chunk.choices[0].text;
+          }
+        } catch (e) {
+          this._diag.debug(e);
+          this._config.exceptionLogger?.(e);
+        }
+      }
+
+      try {
+        if (result.choices[0].logprobs) {
+          this._addLogProbsEvent(span, result.choices[0].logprobs);
+        }
+
+        if (this._config.enrichTokens) {
+          const promptTokens =
+            this.tokenCountFromString(params.prompt as string, result.model) ?? 0;
+
+          const completionTokens = this.tokenCountFromString(
+            result.choices[0].text ?? "",
+            result.model
+          );
+          if (completionTokens) {
+            result.usage = {
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: promptTokens + completionTokens,
+            };
+          }
+        }
+      } catch (e) {
+        this._diag.debug(e);
+        this._config.exceptionLogger?.(e);
+      }
+
+      this._endSpan({ span, type, result });
+    }
+  }
+
+  private _wrapPromise<T>(
+    type: "chat" | "completion",
+    version: "v3" | "v4",
+    span: Span,
+    promise: APIPromiseType<T>
+  ): APIPromiseType<T> {
+    return promise._thenUnwrap((result) => {
+      if (version === "v3") {
+        if (type === "chat") {
+          this._addLogProbsEvent(
+            span,
+            ((result as any).data as ChatCompletion).choices[0].logprobs
+          );
+          this._endSpan({
+            type,
+            span,
+            result: (result as any).data as ChatCompletion,
+          });
+        } else {
+          this._addLogProbsEvent(span, ((result as any).data as Completion).choices[0].logprobs);
+          this._endSpan({
+            type,
+            span,
+            result: (result as any).data as Completion,
+          });
+        }
+      } else {
+        if (type === "chat") {
+          this._addLogProbsEvent(span, (result as ChatCompletion).choices[0].logprobs);
+          this._endSpan({ type, span, result: result as ChatCompletion });
+        } else {
+          this._addLogProbsEvent(span, (result as Completion).choices[0].logprobs);
+          this._endSpan({ type, span, result: result as Completion });
+        }
+      }
+
+      return result;
+    });
+  }
+
+  private _endSpan({
+    span,
+    type,
+    result,
+  }:
+    | { span: Span; type: "chat"; result: ChatCompletion }
+    | { span: Span; type: "completion"; result: Completion }) {
+    try {
+      span.setAttribute(ATTR_GEN_AI_RESPONSE_MODEL, result.model);
+      if (result.usage) {
+        span.setAttribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, result.usage?.total_tokens);
+        span.setAttribute(ATTR_GEN_AI_USAGE_COMPLETION_TOKENS, result.usage?.completion_tokens);
+        span.setAttribute(ATTR_GEN_AI_USAGE_PROMPT_TOKENS, result.usage?.prompt_tokens);
+      }
+
+      if (this._shouldSendPrompts()) {
+        if (type === "chat") {
+          result.choices.forEach((choice, index) => {
+            span.setAttribute(
+              `${ATTR_GEN_AI_COMPLETION}.${index}.finish_reason`,
+              choice.finish_reason
+            );
+            span.setAttribute(`${ATTR_GEN_AI_COMPLETION}.${index}.role`, choice.message.role);
+            span.setAttribute(
+              `${ATTR_GEN_AI_COMPLETION}.${index}.content`,
+              choice.message.content ?? ""
+            );
+
+            if (choice.message.function_call) {
+              span.setAttribute(
+                `${ATTR_GEN_AI_COMPLETION}.${index}.function_call.name`,
+                choice.message.function_call.name
+              );
+              span.setAttribute(
+                `${ATTR_GEN_AI_COMPLETION}.${index}.function_call.arguments`,
+                choice.message.function_call.arguments
+              );
+            }
+            for (const [toolIndex, toolCall] of choice?.message?.tool_calls?.entries() || []) {
+              if (toolCall.type === "function" && "function" in toolCall) {
+                span.setAttribute(
+                  `${ATTR_GEN_AI_COMPLETION}.${index}.tool_calls.${toolIndex}.name`,
+                  toolCall.function.name
+                );
+                span.setAttribute(
+                  `${ATTR_GEN_AI_COMPLETION}.${index}.tool_calls.${toolIndex}.arguments`,
+                  toolCall.function.arguments
+                );
+              }
+            }
+          });
+        } else {
+          result.choices.forEach((choice, index) => {
+            span.setAttribute(
+              `${ATTR_GEN_AI_COMPLETION}.${index}.finish_reason`,
+              choice.finish_reason
+            );
+            span.setAttribute(`${ATTR_GEN_AI_COMPLETION}.${index}.role`, "assistant");
+            span.setAttribute(`${ATTR_GEN_AI_COMPLETION}.${index}.content`, choice.text);
+          });
+        }
+      }
+    } catch (e) {
+      this._diag.debug(e);
+      this._config.exceptionLogger?.(e);
+    }
+
+    span.end();
+  }
+
+  private _shouldSendPrompts() {
+    const contextShouldSendPrompts = context.active().getValue(CONTEXT_KEY_ALLOW_TRACE_CONTENT);
+
+    if (contextShouldSendPrompts !== undefined) {
+      return contextShouldSendPrompts;
+    }
+
+    return this._config.traceContent !== undefined ? this._config.traceContent : true;
+  }
+
+  private _addLogProbsEvent(
+    span: Span,
+    logprobs:
+      | ChatCompletion.Choice.Logprobs
+      | ChatCompletionChunk.Choice.Logprobs
+      | CompletionChoice.Logprobs
+      | null
+  ) {
+    try {
+      let result: { token: string; logprob: number }[] = [];
+
+      if (!logprobs) {
+        return;
+      }
+
+      const chatLogprobs = logprobs as
+        | ChatCompletion.Choice.Logprobs
+        | ChatCompletionChunk.Choice.Logprobs;
+      const completionLogprobs = logprobs as CompletionChoice.Logprobs;
+      if (chatLogprobs.content) {
+        result = chatLogprobs.content.map((logprob) => {
+          return {
+            token: logprob.token,
+            logprob: logprob.logprob,
+          };
+        });
+      } else if (completionLogprobs?.tokens && completionLogprobs?.token_logprobs) {
+        completionLogprobs.tokens.forEach((token, index) => {
+          const logprob = completionLogprobs.token_logprobs?.[index];
+          if (logprob) {
+            result.push({
+              token,
+              logprob,
+            });
+          }
+        });
+      }
+
+      span.addEvent("logprobs", { logprobs: JSON.stringify(result) });
+    } catch (e) {
+      this._diag.debug(e);
+      this._config.exceptionLogger?.(e);
+    }
+  }
+
+  private _encodingCache = new Map<string, Tiktoken>();
+
+  private tokenCountFromString(text: string, model: string) {
+    if (!text) {
+      return 0;
+    }
+
+    let encoding = this._encodingCache.get(model);
+
+    if (!encoding) {
+      try {
+        encoding = encodingForModel(model as TiktokenModel);
+        this._encodingCache.set(model, encoding);
+      } catch (e) {
+        this._diag.debug(e);
+        this._config.exceptionLogger?.(e);
+        return 0;
+      }
+    }
+
+    return encoding.encode(text).length;
+  }
+
+  private _detectVendorFromURL(client: any): {
+    provider: string;
+    modelVendor: string;
+  } {
+    const modelVendor = "OpenAI";
+
+    try {
+      if (!client?.baseURL) {
+        return { provider: "OpenAI", modelVendor };
+      }
+
+      const baseURL = client.baseURL.toLowerCase();
+
+      if (baseURL.includes("azure") || baseURL.includes("openai.azure.com")) {
+        return { provider: "Azure", modelVendor };
+      }
+
+      if (baseURL.includes("openai.com") || baseURL.includes("api.openai.com")) {
+        return { provider: "OpenAI", modelVendor };
+      }
+
+      if (baseURL.includes("amazonaws.com") || baseURL.includes("bedrock")) {
+        return { provider: "AWS", modelVendor };
+      }
+
+      if (baseURL.includes("googleapis.com")) {
+        return { provider: "Google", modelVendor };
+      }
+
+      if (baseURL.includes("openrouter")) {
+        return { provider: "OpenRouter", modelVendor };
+      }
+
+      return { provider: "OpenAI", modelVendor };
+    } catch (e) {
+      this._diag.debug(`Failed to detect vendor from URL: ${e}`);
+      return { provider: "OpenAI", modelVendor };
+    }
+  }
+}
