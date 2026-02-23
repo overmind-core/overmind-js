@@ -1,4 +1,4 @@
-# overmind-js
+# @overmind-lab/trace-sdk
 
 JavaScript/TypeScript SDK for [Overmind](https://overmindlab.ai) — automatic LLM observability powered by OpenTelemetry.
 
@@ -9,9 +9,9 @@ Instrument your OpenAI calls with a single `initTracing()` call. Traces are expo
 ## Installation
 
 ```bash
-bun add overmind-js openai
+bun add @overmind-lab/trace-sdk openai
 # or
-npm install overmind-js openai
+npm install @overmind-lab/trace-sdk openai
 ```
 
 ---
@@ -20,7 +20,7 @@ npm install overmind-js openai
 
 ```ts
 import { OpenAI } from "openai";
-import { OvermindClient } from "overmind-js";
+import { OvermindClient } from "@overmind-lab/trace-sdk";
 
 // 1. Create the client
 const overmindClient = new OvermindClient({
