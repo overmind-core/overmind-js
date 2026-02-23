@@ -10,7 +10,7 @@ import {
 import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 
-import type { OpenAI } from "openai";
+import { OpenAI } from "openai";
 
 import { name, version } from "../package.json";
 import { OpenAIInstrumentation } from "./instrumentation-openai";
@@ -52,7 +52,7 @@ export class OvermindClient {
     instrumentations?: Instrumentation[];
     spanProcessors?: SpanProcessor[];
     enableBatching: boolean;
-    enabledProviders: { openai: OpenAI };
+    enabledProviders: { openai: typeof OpenAI };
   }) {
     const traceExporter = this.baseUrl
       ? new OTLPTraceExporter({
