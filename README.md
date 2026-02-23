@@ -41,7 +41,7 @@ const openai = new OpenAI({
 });
 
 const response = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
+  model: "gpt-5-mini",
   messages: [{ role: "user", content: "Hello, how are you?" }],
 });
 ```
