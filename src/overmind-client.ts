@@ -10,10 +10,10 @@ import {
 import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 
-import OpenAI from "openai";
-import { OpenAIInstrumentation } from "./instrumentation-openai";
+import type { OpenAI } from "openai";
 
 import { name, version } from "../package.json";
+import { OpenAIInstrumentation } from "./instrumentation-openai";
 
 type OvermindClientConfig = {
   apiKey: string;
@@ -52,14 +52,16 @@ export class OvermindClient {
     instrumentations?: Instrumentation[];
     spanProcessors?: SpanProcessor[];
     enableBatching: boolean;
-    enabledProviders: Partial<Record<"openai" | "anthropic", boolean>>;
+    enabledProviders: Partial<{
+      openai: OpenAI;
+    }>;
   }) {
     const traceExporter = this.baseUrl
       ? new OTLPTraceExporter({
-          url: `${this.baseUrl}/api/v1/traces/create`,
           headers: {
             "X-API-TOKEN": this.apiKey,
           },
+          url: `${this.baseUrl}/api/v1/traces/create`,
         })
       : new ConsoleSpanExporter();
 
@@ -81,14 +83,14 @@ export class OvermindClient {
       const openaiInstrumentation = new OpenAIInstrumentation({
         enabled: true,
       });
-      openaiInstrumentation.manuallyInstrument(OpenAI);
+      openaiInstrumentation.manuallyInstrument(config.enabledProviders.openai);
       instrumentations.push(openaiInstrumentation);
     }
 
     this.sdk = new NodeSDK({
+      instrumentations: [...instrumentations],
       resource,
       spanProcessors,
-      instrumentations: [...instrumentations],
     });
 
     this.sdk.start();

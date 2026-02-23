@@ -31,7 +31,7 @@ const overmindClient = new OvermindClient({
 // 2. Initialize tracing — must be called before any OpenAI calls
 overmindClient.initTracing({
   enableBatching: false,
-  enabledProviders: { openai: true },
+  enabledProviders: { openai: OpenAI }, // this is important to patch the correct client
   instrumentations: [],
 });
 
