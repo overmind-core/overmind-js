@@ -52,9 +52,7 @@ export class OvermindClient {
     instrumentations?: Instrumentation[];
     spanProcessors?: SpanProcessor[];
     enableBatching: boolean;
-    enabledProviders: Partial<{
-      openai: OpenAI;
-    }>;
+    enabledProviders: { openai: OpenAI };
   }) {
     const traceExporter = this.baseUrl
       ? new OTLPTraceExporter({
