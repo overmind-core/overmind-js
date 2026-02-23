@@ -26,6 +26,7 @@ export class OvermindClient {
   private version: string = version;
   private baseUrl: string;
   private apiKey: string;
+  private sdk?: NodeSDK;
   public experimentSlug?: string;
 
   constructor(config: OvermindClientConfig) {
@@ -53,11 +54,11 @@ export class OvermindClient {
     enableBatching: boolean;
     enabledProviders: Partial<Record<"openai" | "anthropic", boolean>>;
   }) {
-    const traceExporter = !this.baseUrl
+    const traceExporter = this.baseUrl
       ? new OTLPTraceExporter({
           url: `${this.baseUrl}/api/v1/traces/create`,
           headers: {
-            "X-API-TOKEN": `Bearer ${this.apiKey}`,
+            "X-API-TOKEN": this.apiKey,
           },
         })
       : new ConsoleSpanExporter();
@@ -84,12 +85,16 @@ export class OvermindClient {
       instrumentations.push(openaiInstrumentation);
     }
 
-    const _sdk = new NodeSDK({
+    this.sdk = new NodeSDK({
       resource,
       spanProcessors,
       instrumentations: [...instrumentations],
     });
 
-    _sdk.start();
+    this.sdk.start();
+  }
+
+  async shutdown() {
+    await this.sdk?.shutdown();
   }
 }
