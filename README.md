@@ -64,7 +64,7 @@ Traces are sent automatically to `https://api.overmindlab.ai` and will appear in
 
 | Option | Type | Required | Description |
 |---|---|---|---|
-| `enabledProviders` | `{ openai?: boolean; anthropic?: boolean }` | Yes | Which LLM providers to instrument. |
+| `enabledProviders` | `{ openai?: typeof OpenAI }` | Yes | Pass the imported provider class to monkey-patch. e.g. `{ openai: OpenAI }` where `OpenAI` is imported from `"openai"`. |
 | `enableBatching` | `boolean` | Yes | `true` to batch spans before export (recommended for production), `false` to export immediately. |
 | `instrumentations` | `Instrumentation[]` | No | Additional OpenTelemetry instrumentations to register. |
 | `spanProcessors` | `SpanProcessor[]` | No | Additional span processors (e.g. custom exporters). |
@@ -84,7 +84,7 @@ Traces are sent automatically to `https://api.overmindlab.ai` and will appear in
 
 ## What Gets Traced
 
-When `enabledProviders: { openai: true }` is set, the SDK automatically captures:
+When `enabledProviders: { openai: OpenAI }` is set, the SDK automatically captures:
 
 - Prompts and completions
 - Model name, temperature, top-p, max tokens
@@ -103,7 +103,7 @@ Enable batching in production to reduce network overhead:
 ```ts
 overmindClient.initTracing({
   enableBatching: true, // buffer spans and flush in batches
-  enabledProviders: { openai: true },
+  enabledProviders: { openai: OpenAI },
 });
 ```
 
