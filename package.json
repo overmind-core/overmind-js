@@ -1,29 +1,37 @@
 {
   "dependencies": {
+    "@google/genai": "^1.43.0",
     "@opentelemetry/auto-instrumentations-node": "^0.70.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.212.0",
     "@opentelemetry/instrumentation-openai": "^0.10.0",
     "@opentelemetry/sdk-node": "^0.212.0",
     "@opentelemetry/sdk-trace-node": "^2.5.1",
     "@traceloop/ai-semantic-conventions": "^0.22.5",
+    "@traceloop/instrumentation-anthropic": "^0.22.6",
+    "@traceloop/instrumentation-bedrock": "^0.22.6",
+    "@traceloop/instrumentation-langchain": "^0.22.6",
+    "@traceloop/instrumentation-openai": "^0.22.5",
     "js-tiktoken": "^1.0.21"
   },
-  "optionalDependencies": {
-    "@biomejs/biome": "^2.4.3"
-  },
   "devDependencies": {},
-  "peerDependencies": {
-    "openai": "*"
-  },
-  "name": "@overmind-lab/trace-sdk",
-  "main": "src/index.ts",
   "exports": {
     ".": {
       "import": "./src/index.ts",
       "require": "./src/index.ts"
     }
   },
+  "main": "src/index.ts",
+  "name": "@overmind-lab/trace-sdk",
+  "optionalDependencies": {
+    "@biomejs/biome": "^2.4.3"
+  },
   "packageManager": "bun@1.3.5",
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "*",
+    "@aws-sdk/client-bedrock-runtime": "*",
+    "langchain": "*",
+    "openai": "*"
+  },
   "private": false,
   "publishConfig": {
     "access": "public",

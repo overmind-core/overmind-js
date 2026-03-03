@@ -2,51 +2,155 @@
 
 JavaScript/TypeScript SDK for [Overmind](https://overmindlab.ai) — automatic LLM observability powered by OpenTelemetry.
 
-Instrument your OpenAI calls with a single `initTracing()` call. Traces are exported to the Overmind platform with zero changes to your existing AI code.
+Instrument your AI provider calls with a single `initTracing()` call. Traces are exported to the Overmind platform with zero changes to your existing AI code.
+
+Supported providers: **OpenAI**, **Google GenAI (Gemini)**, **Anthropic**, **AWS Bedrock**.
 
 ---
 
 ## Installation
 
+Install the SDK alongside whichever AI provider(s) you use:
+
 ```bash
+# OpenAI
 bun add @overmind-lab/trace-sdk openai
-# or
 npm install @overmind-lab/trace-sdk openai
+
+# Google GenAI
+bun add @overmind-lab/trace-sdk @google/genai
+npm install @overmind-lab/trace-sdk @google/genai
+
+# Anthropic
+bun add @overmind-lab/trace-sdk @anthropic-ai/sdk
+npm install @overmind-lab/trace-sdk @anthropic-ai/sdk
 ```
 
 ---
 
-## Quick Start with OpenAI
+## Quick Start
+
+### OpenAI
 
 ```ts
 import { OpenAI } from "openai";
 import { OvermindClient } from "@overmind-lab/trace-sdk";
 
-// 1. Create the client
 const overmindClient = new OvermindClient({
   apiKey: process.env.OVERMIND_API_KEY!,
-  appName: "my fintech app",
+  appName: "my-app",
 });
 
-// 2. Initialize tracing — must be called before any OpenAI calls
+// Must be called before any OpenAI calls
 overmindClient.initTracing({
   enableBatching: false,
-  enabledProviders: { openai: OpenAI }, // this is important to patch the correct client
-  instrumentations: [],
+  enabledProviders: { openai: OpenAI },
 });
 
-// 3. Use OpenAI as normal — all calls are automatically traced
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const response = await openai.chat.completions.create({
-  model: "gpt-5-mini",
+  model: "gpt-4o-mini",
   messages: [{ role: "user", content: "Hello, how are you?" }],
 });
 ```
 
-Traces are sent automatically to `https://api.overmindlab.ai` and will appear in your Overmind dashboard.
+---
+
+### Google GenAI (Gemini)
+
+```ts
+import * as google from "@google/genai";
+import { OvermindClient } from "@overmind-lab/trace-sdk";
+
+const overmindClient = new OvermindClient({
+  apiKey: process.env.OVERMIND_API_KEY!,
+  appName: "my-app",
+});
+
+// Must be called before any Google GenAI calls
+overmindClient.initTracing({
+  enableBatching: false,
+  enabledProviders: { googleGenAI: google },
+});
+
+const ai = new google.GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+
+// Non-streaming
+const response = await ai.models.generateContent({
+  model: "gemini-2.0-flash",
+  contents: "Why is the sky blue?",
+});
+console.log(response.text);
+
+// Streaming
+const stream = await ai.models.generateContentStream({
+  model: "gemini-2.0-flash",
+  contents: "Tell me a short story.",
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.text ?? "");
+}
+```
+
+> **Note:** Pass the entire `@google/genai` module namespace (`import * as google`) as the `googleGenAI` provider, not a single class.
+
+---
+
+### Anthropic
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import * as AnthropicModule from "@anthropic-ai/sdk";
+import { OvermindClient } from "@overmind-lab/trace-sdk";
+
+const overmindClient = new OvermindClient({
+  apiKey: process.env.OVERMIND_API_KEY!,
+  appName: "my-app",
+});
+
+// Must be called before any Anthropic calls
+overmindClient.initTracing({
+  enableBatching: false,
+  enabledProviders: { anthropic: AnthropicModule },
+});
+
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const message = await client.messages.create({
+  model: "claude-opus-4-5",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello, Claude!" }],
+});
+console.log(message.content[0]);
+```
+
+---
+
+### Multiple Providers
+
+You can enable multiple providers in a single `initTracing()` call:
+
+```ts
+import { OpenAI } from "openai";
+import * as GoogleGenAI from "@google/genai";
+import * as AnthropicModule from "@anthropic-ai/sdk";
+import { OvermindClient } from "@overmind-lab/trace-sdk";
+
+const overmindClient = new OvermindClient({
+  apiKey: process.env.OVERMIND_API_KEY!,
+  appName: "my-app",
+});
+
+overmindClient.initTracing({
+  enableBatching: true,
+  enabledProviders: {
+    openai: OpenAI,
+    googleGenAI: GoogleGenAI,
+    anthropic: AnthropicModule,
+  },
+});
+```
 
 ---
 
@@ -64,8 +168,8 @@ Traces are sent automatically to `https://api.overmindlab.ai` and will appear in
 
 | Option | Type | Required | Description |
 |---|---|---|---|
-| `enabledProviders` | `{ openai?: typeof OpenAI }` | Yes | Pass the imported provider class to monkey-patch. e.g. `{ openai: OpenAI }` where `OpenAI` is imported from `"openai"`. |
-| `enableBatching` | `boolean` | Yes | `true` to batch spans before export (recommended for production), `false` to export immediately. |
+| `enabledProviders` | `{ openai?, googleGenAI?, anthropic?, bedrock? }` | Yes | Pass the imported provider module to monkey-patch. See quick start examples above. |
+| `enableBatching` | `boolean` | No | `true` to buffer spans and flush in batches (recommended for production). Defaults to `true`. |
 | `instrumentations` | `Instrumentation[]` | No | Additional OpenTelemetry instrumentations to register. |
 | `spanProcessors` | `SpanProcessor[]` | No | Additional span processors (e.g. custom exporters). |
 
@@ -79,20 +183,40 @@ Traces are sent automatically to `https://api.overmindlab.ai` and will appear in
 | `OVERMIND_TRACES_URL` | Override the traces ingest base URL |
 | `DEPLOYMENT_ENVIRONMENT` | Tag traces with an environment (e.g. `production`, `staging`). Defaults to `development`. |
 | `OPENAI_API_KEY` | Your OpenAI API key |
+| `GOOGLE_API_KEY` | Your Google GenAI API key |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
 
 ---
 
 ## What Gets Traced
 
-When `enabledProviders: { openai: OpenAI }` is set, the SDK automatically captures:
+The SDK automatically captures the following for each provider:
 
-- Prompts and completions
+### OpenAI
+- Prompts (messages) and completions
 - Model name, temperature, top-p, max tokens
-- Token usage
-- Latency per request
-- Errors and exceptions
+- Token usage (prompt, completion, total)
+- Streaming responses
+- Function/tool calls
+- Image generation (`dall-e-3`)
+- Errors and latency
 
-All data is attached to OpenTelemetry spans and exported to Overmind.
+### Google GenAI (Gemini)
+- Prompts (contents) and completions
+- System instructions
+- Model name, temperature, top-p, max output tokens
+- Token usage (prompt, candidates, total)
+- Streaming responses
+- Function/tool calls
+- Errors and latency
+
+### Anthropic
+- Prompts (messages) and completions
+- Model name, temperature, max tokens
+- Token usage (input, output)
+- Streaming responses
+- Tool use
+- Errors and latency
 
 ---
 
@@ -102,7 +226,7 @@ Enable batching in production to reduce network overhead:
 
 ```ts
 overmindClient.initTracing({
-  enableBatching: true, // buffer spans and flush in batches
+  enableBatching: true,
   enabledProviders: { openai: OpenAI },
 });
 ```
@@ -113,7 +237,7 @@ Use `enableBatching: false` during local development to see traces immediately.
 
 ## Resource Attributes
 
-Every trace is tagged with the following attributes automatically:
+Every trace is automatically tagged with:
 
 | Attribute | Value |
 |---|---|

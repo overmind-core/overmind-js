@@ -15,11 +15,11 @@ import * as Bedrock from "@aws-sdk/client-bedrock-runtime";
 import type * as GoogleGenAI from "@google/genai";
 import { AnthropicInstrumentation } from "@traceloop/instrumentation-anthropic";
 import { BedrockInstrumentation } from "@traceloop/instrumentation-bedrock";
-import { OpenAIInstrumentation } from "@traceloop/instrumentation-openai";
 import type { OpenAI } from "openai";
 
 import { name, version } from "../package.json";
 import { GoogleGenAIInstrumentation } from "./instrumentation-google-genai";
+import { OpenAIInstrumentation } from "./instrumentation-openai";
 
 type OvermindClientConfig = {
   apiKey: string;
