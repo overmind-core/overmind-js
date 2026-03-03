@@ -12,12 +12,14 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic
 
 import * as Anthropic from "@anthropic-ai/sdk";
 import * as Bedrock from "@aws-sdk/client-bedrock-runtime";
+import type * as GoogleGenAI from "@google/genai";
 import { AnthropicInstrumentation } from "@traceloop/instrumentation-anthropic";
 import { BedrockInstrumentation } from "@traceloop/instrumentation-bedrock";
+import { OpenAIInstrumentation } from "@traceloop/instrumentation-openai";
 import type { OpenAI } from "openai";
 
 import { name, version } from "../package.json";
-import { OpenAIInstrumentation } from "./instrumentation-openai";
+import { GoogleGenAIInstrumentation } from "./instrumentation-google-genai";
 
 type OvermindClientConfig = {
   apiKey: string;
@@ -61,10 +63,18 @@ export class OvermindClient {
     instrumentations?: Instrumentation[];
     spanProcessors?: SpanProcessor[];
     enableBatching?: boolean;
-    enabledProviders?: Partial<{ openai: typeof OpenAI; anthropic: typeof Anthropic; bedrock: typeof Bedrock }>;
+    enabledProviders?: Partial<{
+      openai: typeof OpenAI;
+      anthropic: typeof Anthropic;
+      bedrock: typeof Bedrock;
+      googleGenAI: typeof GoogleGenAI;
+    }>;
   }) {
     const traceExporter = this.baseUrl
-      ? new OTLPTraceExporter({ headers: { "X-API-TOKEN": this.apiKey }, url: `${this.baseUrl}/api/v1/traces/create` })
+      ? new OTLPTraceExporter({
+          headers: { "X-API-TOKEN": this.apiKey },
+          url: `${this.baseUrl}/api/v1/traces/create`,
+        })
       : new ConsoleSpanExporter();
 
     const spanProcessor = enableBatching
@@ -96,6 +106,12 @@ export class OvermindClient {
       const bedrockInstrumentation = new BedrockInstrumentation({ enabled: true });
       bedrockInstrumentation.manuallyInstrument(Bedrock);
       instrumentations.push(bedrockInstrumentation);
+    }
+
+    if (enabledProviders.googleGenAI) {
+      const googleGenAIInstrumentation = new GoogleGenAIInstrumentation({ enabled: true });
+      googleGenAIInstrumentation.manuallyInstrument(enabledProviders.googleGenAI);
+      instrumentations.push(googleGenAIInstrumentation);
     }
 
     this.sdk = new NodeSDK({
