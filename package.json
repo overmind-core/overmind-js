@@ -43,5 +43,5 @@
     "dev": "tsx watch src/index.ts",
     "format": "biome format --write"
   },
-  "version": "0.0.6"
+  "version": "0.0.7"
 }
