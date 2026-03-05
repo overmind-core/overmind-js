@@ -1,0 +1,56 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'README.md'
+
+jobs:
+  test_and_check_version:
+    name: Test and Check Version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: 'main'
+
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          path: 'pr'
+
+      - name: Check for version increment
+        id: check_version
+        run: |
+          # Install jq, a tool for parsing JSON
+          sudo apt-get update && sudo apt-get install -y jq
+
+          # Extract version from the main branch's package.json
+          main_version=$(jq -r .version main/package.json)
+          echo "Version on main: $main_version"
+
+          # Extract version from the PR branch's package.json
+          pr_version=$(jq -r .version pr/package.json)
+          echo "Version on PR branch: $pr_version"
+
+          if [ "$main_version" == "$pr_version" ]; then
+            echo "Version has not been incremented from main."
+            exit 1
+          fi
+
+          # The `sort -V` command handles version numbers correctly.
+          # It understands that 0.1.10 is greater than 0.1.9.
+          if [ "$(printf '%s\n' "$main_version" "$pr_version" | sort -V | head -n1)" != "$main_version" ]; then
+             echo "PR version ($pr_version) is not greater than main version ($main_version)."
+             exit 1
+          fi
+
+          echo "Version check passed!"
