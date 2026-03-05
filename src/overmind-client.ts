@@ -27,6 +27,10 @@ type OvermindClientConfig = {
   appName?: string;
 };
 
+const LOCAL_API_KEY_PREFIX = "ovr_core_";
+const LOCAL_BASE_URL = "http://localhost:8000";
+const DEFAULT_BASE_URL = "https://api.overmindlab.ai";
+
 export class OvermindClient {
   public readonly appName: string;
   private version: string = version;
@@ -36,14 +40,16 @@ export class OvermindClient {
   public experimentSlug?: string;
 
   constructor(config: OvermindClientConfig) {
+    // biome-ignore lint/style/noNonNullAssertion: must always set api key
+    this.apiKey = config.apiKey || process.env.OVERMIND_API_KEY!;
+
     this.baseUrl =
       config.baseUrl ||
       process.env.OVERMIND_API_URL ||
       process.env.OVERMIND_TRACES_URL ||
-      "https://api.overmindlab.ai";
-
-    // biome-ignore lint/style/noNonNullAssertion: must always set api key
-    this.apiKey = config.apiKey || process.env.OVERMIND_API_KEY!;
+      this.apiKey.startsWith(LOCAL_API_KEY_PREFIX)
+        ? LOCAL_BASE_URL
+        : DEFAULT_BASE_URL;
 
     this.appName = config.appName || "overmind-js";
     if (!this.apiKey) {
@@ -73,7 +79,7 @@ export class OvermindClient {
     const traceExporter = this.baseUrl
       ? new OTLPTraceExporter({
           headers: { "X-API-TOKEN": this.apiKey },
-          url: `${this.baseUrl}/api/v1/traces/create`,
+          url: `${this.baseUrl}/api/v1/traces`,
         })
       : new ConsoleSpanExporter();
 
