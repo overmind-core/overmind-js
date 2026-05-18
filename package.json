@@ -1,10 +1,10 @@
 {
   "dependencies": {
-    "@opentelemetry/auto-instrumentations-node": "^0.70.0",
-    "@opentelemetry/exporter-trace-otlp-proto": "^0.212.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.218.0",
     "@opentelemetry/instrumentation-openai": "^0.10.0",
-    "@opentelemetry/sdk-node": "^0.212.0",
-    "@opentelemetry/sdk-trace-node": "^2.5.1",
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/sdk-trace-node": "^2.7.1",
     "@traceloop/ai-semantic-conventions": "^0.22.5",
     "@traceloop/instrumentation-anthropic": "^0.22.6",
     "@traceloop/instrumentation-bedrock": "^0.22.6",
