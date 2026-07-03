@@ -163,6 +163,43 @@ overmindClient.initTracing({
 | `apiKey` | `string` | Yes | Your Overmind API key. Falls back to `OVERMIND_API_KEY` env var. |
 | `appName` | `string` | No | Name of your service, shown in the dashboard. Defaults to `"overmind-js"`. |
 | `baseUrl` | `string` | No | Override the Overmind ingest endpoint. Defaults to `OVERMIND_TRACES_URL` env var or `https://api.overmindlab.ai`. |
+| `agentId` | `string` | No | The Agent's server UUID. Stamped as `overmind.agent.id` on the resource and every span; resolved by a direct primary-key lookup (drift-proof). Falls back to `OVERMIND_AGENT_ID`. **Prefer this over `agentName`.** |
+| `agentName` | `string` | No | Human-readable agent name (`overmind.agent.name`). The server slugifies it for a stable identity, so keep it constant across runs. Falls back to `OVERMIND_AGENT_NAME`. |
+| `projectId` | `string` | No | Project UUID (`overmind.project.id`). Usually inferred from the API token; only needed for session auth. Falls back to `OVERMIND_PROJECT_ID`. |
+
+### Agent identity
+
+Bind a trace to a specific Agent so the platform can roll token usage and cost up correctly. Pass `agentId` / `agentName` to the client, or set them at runtime:
+
+```ts
+import { setAgentId, setAgentName, setProjectId } from "@overmind-lab/trace-sdk";
+
+setAgentId("6f1c…"); // preferred — drift-proof primary key
+setAgentName("Support Triage Agent"); // slugified server-side for stable identity
+setProjectId("…"); // session-auth only
+```
+
+### Manual tracing
+
+Provider LLM calls are traced automatically. To trace your own tools, retrieval steps, and workflows with the canonical Overmind attributes, wrap them:
+
+```ts
+import { tool, retrieval, setRetrievalStats, withSpan } from "@overmind-lab/trace-sdk";
+
+const lookupOrder = tool("lookup_order", async ({ orderId }: { orderId: string }) => {
+  return await db.orders.find(orderId); // emits tool.name / tool.arg_keys (and tool.error on failure)
+});
+
+const search = retrieval("vector_search", async (query: string) => {
+  const docs = await index.query(query);
+  setRetrievalStats({ queryChars: query.length, resultCount: docs.length });
+  return docs;
+});
+
+await withSpan("handle_ticket", async () => {
+  /* spans created inside nest under this one */
+}, { attributes: { "ticket.id": id } });
+```
 
 ### `initTracing(options)`
 
@@ -181,6 +218,9 @@ overmindClient.initTracing({
 |---|---|
 | `OVERMIND_API_KEY` | Your Overmind API key |
 | `OVERMIND_TRACES_URL` | Override the traces ingest base URL |
+| `OVERMIND_AGENT_ID` | Agent UUID fallback for `agentId` |
+| `OVERMIND_AGENT_NAME` | Agent name fallback for `agentName` |
+| `OVERMIND_PROJECT_ID` | Project UUID fallback for `projectId` |
 | `DEPLOYMENT_ENVIRONMENT` | Tag traces with an environment (e.g. `production`, `staging`). Defaults to `development`. |
 | `OPENAI_API_KEY` | Your OpenAI API key |
 | `GOOGLE_API_KEY` | Your Google GenAI API key |
@@ -246,3 +286,24 @@ Every trace is automatically tagged with:
 | `deployment.environment` | `DEPLOYMENT_ENVIRONMENT` env var or `"development"` |
 | `overmind.sdk.name` | `overmind-js` |
 | `overmind.sdk.version` | SDK version |
+| `overmind.agent.id` | Value of `agentId` (if set) |
+| `overmind.agent.name` | Value of `agentName` (if set) |
+| `overmind.project.id` | Value of `projectId` (if set) |
+
+## Canonical `genai.*` attributes
+
+On every LLM / generation span the SDK emits the canonical Overmind keys the
+platform rolls up — mirrored from the underlying OTel `gen_ai.*` /
+`llm.usage.*` attributes and never zero-filled (unknown values are omitted):
+
+| Attribute | Meaning |
+|---|---|
+| `genai.model` / `genai.response.model` / `genai.provider` | Model + provider |
+| `genai.prompt_tokens` / `genai.completion_tokens` / `genai.total_tokens` | Token usage (rolled up) |
+| `genai.cost` | USD cost — provider-reported or derived from model pricing (rolled up) |
+| `genai.cache_read_tokens` | Prompt-cache read tokens |
+| `genai.request.temperature` / `genai.request.max_tokens` / `genai.request.top_p` | Request params |
+| `genai.request.message_count` / `genai.request.message_chars` / `genai.request.tool_count` | Request shape |
+| `genai.response.finish_reason` / `genai.response.message_chars` | Response shape |
+| `genai.streaming` / `genai.time_to_first_token_seconds` | Streaming + TTFT |
+| `genai.elapsed_seconds` | Client-measured latency |

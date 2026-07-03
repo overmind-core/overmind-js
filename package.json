@@ -12,7 +12,10 @@
     "@traceloop/instrumentation-openai": "^0.22.5",
     "js-tiktoken": "^1.0.21"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^6.0.3"
+  },
   "exports": {
     ".": {
       "import": "./src/index.ts",
@@ -41,7 +44,9 @@
     "build": "tsc",
     "check": "biome check --write",
     "dev": "tsx watch src/index.ts",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
-  "version": "0.0.7"
+  "version": "0.1.0"
 }

@@ -17,14 +17,33 @@ import { AnthropicInstrumentation } from "@traceloop/instrumentation-anthropic";
 import { BedrockInstrumentation } from "@traceloop/instrumentation-bedrock";
 import type { OpenAI } from "openai";
 
-import { name, version } from "../package.json";
+import { version } from "../package.json";
+import * as attrs from "./attrs";
+import { identityResourceAttributes, seedIdentity } from "./identity";
 import { GoogleGenAIInstrumentation } from "./instrumentation-google-genai";
 import { OpenAIInstrumentation } from "./instrumentation-openai";
+import { OvermindSpanProcessor } from "./span-processors";
+
+const SDK_NAME = "overmind-js";
 
 type OvermindClientConfig = {
   apiKey: string;
   baseUrl?: string;
   appName?: string;
+  /**
+   * Agent server UUID. Stamped as `overmind.agent.id` on the resource and every
+   * span; resolved by a direct primary-key lookup (drift-proof). Falls back to
+   * `OVERMIND_AGENT_ID`. Prefer this over `agentName` when known.
+   */
+  agentId?: string;
+  /**
+   * Human-readable agent name. Stamped as `overmind.agent.name`; the server
+   * slugifies it for a stable identity, so keep it constant. Falls back to
+   * `OVERMIND_AGENT_NAME`.
+   */
+  agentName?: string;
+  /** Project UUID (`overmind.project.id`). Falls back to `OVERMIND_PROJECT_ID`. */
+  projectId?: string;
 };
 
 const LOCAL_API_KEY_PREFIX = "ovr_core_";
@@ -37,11 +56,17 @@ export class OvermindClient {
   private baseUrl: string;
   private apiKey: string;
   private sdk?: NodeSDK;
+  private identityConfig: { agentId?: string; agentName?: string; projectId?: string };
   public experimentSlug?: string;
 
   constructor(config: OvermindClientConfig) {
     // biome-ignore lint/style/noNonNullAssertion: must always set api key
     this.apiKey = config.apiKey || process.env.OVERMIND_API_KEY!;
+    this.identityConfig = {
+      agentId: config.agentId,
+      agentName: config.agentName,
+      projectId: config.projectId,
+    };
 
     this.baseUrl =
       config.baseUrl ||
@@ -87,14 +112,25 @@ export class OvermindClient {
       ? new BatchSpanProcessor(traceExporter)
       : new SimpleSpanProcessor(traceExporter);
 
+    // Seed identity (config + OVERMIND_AGENT_ID/NAME/PROJECT_ID env fallbacks)
+    // before building the resource so both the resource and the on-start
+    // processor carry the same agent/project identity.
+    seedIdentity(this.identityConfig);
+
+    // The Overmind processor stamps identity on start and mirrors auto-
+    // instrumentor usage onto canonical `genai.*` keys on span end. Its
+    // enrichment runs in `onEnding` (before export), so order vs. the exporter
+    // processor does not matter.
+    spanProcessors.unshift(new OvermindSpanProcessor());
     spanProcessors.push(spanProcessor);
 
     const resource = resourceFromAttributes({
       [ATTR_SERVICE_NAME]: this.appName,
       [ATTR_SERVICE_VERSION]: this.version,
       "deployment.environment": process.env.DEPLOYMENT_ENVIRONMENT || "development",
-      "overmind.sdk.name": name,
-      "overmind.sdk.version": this.version,
+      [attrs.SDK_NAME]: SDK_NAME,
+      [attrs.SDK_VERSION]: this.version,
+      ...identityResourceAttributes(),
     });
 
     if (enabledProviders.openai) {

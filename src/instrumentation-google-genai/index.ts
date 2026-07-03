@@ -47,6 +47,7 @@ import {
 } from "@traceloop/ai-semantic-conventions";
 
 import { version } from "../../package.json";
+import * as overmindAttrs from "../attrs";
 import type { GoogleGenAIInstrumentationConfig } from "./types";
 
 export class GoogleGenAIInstrumentation extends InstrumentationBase {
@@ -203,8 +204,20 @@ export class GoogleGenAIInstrumentation extends InstrumentationBase {
     let lastChunk: GenerateContentResponse | undefined;
     let accumulatedText = "";
 
+    // Streaming telemetry: flag the span and record time-to-first-token (TTFT).
+    span.setAttribute(overmindAttrs.LLM_STREAMING, true);
+    const streamStartMs = performance.now();
+    let firstChunkSeen = false;
+
     try {
       for await (const chunk of generator) {
+        if (!firstChunkSeen) {
+          firstChunkSeen = true;
+          span.setAttribute(
+            overmindAttrs.LLM_TTFT_SECONDS,
+            Math.round(performance.now() - streamStartMs) / 1000
+          );
+        }
         yield chunk;
         lastChunk = chunk;
 
