@@ -33,6 +33,7 @@ import {
   ATTR_GEN_AI_USAGE_COMPLETION_TOKENS,
   ATTR_GEN_AI_USAGE_PROMPT_TOKENS,
 } from "@opentelemetry/semantic-conventions/incubating";
+
 import {
   CONTEXT_KEY_ALLOW_TRACE_CONTENT,
   SpanAttributes,
@@ -50,7 +51,9 @@ import type {
   CompletionCreateParamsStreaming,
 } from "openai/resources";
 import type { Stream } from "openai/streaming";
+
 import { version } from "../../package.json";
+import * as overmindAttrs from "../attrs";
 import type { OpenAIInstrumentationConfig } from "./types";
 
 // Type definition for APIPromise - compatible with both OpenAI v4 and v5+
@@ -185,18 +188,18 @@ export class OpenAIInstrumentation extends InstrumentationBase {
         const span =
           type === "chat"
             ? plugin.startSpan({
-                type,
+                client: this,
                 params: args[0] as ChatCompletionCreateParamsNonStreaming & {
                   extraAttributes?: Record<string, any>;
                 },
-                client: this,
+                type,
               })
             : plugin.startSpan({
-                type,
+                client: this,
                 params: args[0] as CompletionCreateParamsNonStreaming & {
                   extraAttributes?: Record<string, any>;
                 },
-                client: this,
+                type,
               });
 
         const execContext = trace.setSpan(context.active(), span);
@@ -222,10 +225,10 @@ export class OpenAIInstrumentation extends InstrumentationBase {
           return context.bind(
             execContext,
             plugin._streamingWrapPromise({
-              span,
-              type,
               params: args[0] as any,
               promise: execPromise,
+              span,
+              type,
             })
           );
         }
@@ -335,8 +338,8 @@ export class OpenAIInstrumentation extends InstrumentationBase {
     }
 
     return this.tracer.startSpan(`openai.${type}`, {
-      kind: SpanKind.CLIENT,
       attributes,
+      kind: SpanKind.CLIENT,
     });
   }
 
@@ -358,26 +361,39 @@ export class OpenAIInstrumentation extends InstrumentationBase {
         type: "completion";
         promise: APIPromiseType<Stream<Completion>>;
       }) {
+    // Streaming telemetry: flag the span and record time-to-first-token (TTFT).
+    span.setAttribute(overmindAttrs.LLM_STREAMING, true);
+    const streamStartMs = performance.now();
+    let firstChunkSeen = false;
+    const markFirstChunk = () => {
+      if (firstChunkSeen) return;
+      firstChunkSeen = true;
+      span.setAttribute(
+        overmindAttrs.LLM_TTFT_SECONDS,
+        Math.round(performance.now() - streamStartMs) / 1000
+      );
+    };
     if (type === "chat") {
       const result: ChatCompletion = {
-        id: "0",
-        created: -1,
-        model: "",
         choices: [
           {
+            finish_reason: "stop",
             index: 0,
             logprobs: null,
-            finish_reason: "stop",
             message: {
-              role: "assistant",
               content: "",
+              role: "assistant",
               tool_calls: [],
             } as any,
           },
         ],
+        created: -1,
+        id: "0",
+        model: "",
         object: "chat.completion",
       };
       for await (const chunk of await promise) {
+        markFirstChunk();
         yield chunk;
 
         result.id = chunk.id;
@@ -400,16 +416,16 @@ export class OpenAIInstrumentation extends InstrumentationBase {
         ) {
           // I needed to re-build the object so that Typescript will understand that `name` and `argument` are not null.
           result.choices[0].message.function_call = {
-            name: chunk.choices[0].delta.function_call.name,
             arguments: chunk.choices[0].delta.function_call.arguments,
+            name: chunk.choices[0].delta.function_call.name,
           };
         }
         for (const toolCall of chunk.choices[0]?.delta?.tool_calls ?? []) {
           if ((result.choices[0].message.tool_calls?.length ?? 0) < toolCall.index + 1) {
             result.choices[0].message.tool_calls?.push({
               function: {
-                name: "",
                 arguments: "",
+                name: "",
               },
               id: "",
               type: "function",
@@ -451,30 +467,31 @@ export class OpenAIInstrumentation extends InstrumentationBase {
         );
         if (completionTokens) {
           result.usage = {
-            prompt_tokens: promptTokens,
             completion_tokens: completionTokens,
+            prompt_tokens: promptTokens,
             total_tokens: promptTokens + completionTokens,
           };
         }
       }
 
-      this._endSpan({ span, type, result });
+      this._endSpan({ result, span, type });
     } else {
       const result: Completion = {
-        id: "0",
-        created: -1,
-        model: "",
         choices: [
           {
+            finish_reason: "stop",
             index: 0,
             logprobs: null,
-            finish_reason: "stop",
             text: "",
           },
         ],
+        created: -1,
+        id: "0",
+        model: "",
         object: "text_completion",
       };
       for await (const chunk of await promise) {
+        markFirstChunk();
         yield chunk;
 
         try {
@@ -512,8 +529,8 @@ export class OpenAIInstrumentation extends InstrumentationBase {
           );
           if (completionTokens) {
             result.usage = {
-              prompt_tokens: promptTokens,
               completion_tokens: completionTokens,
+              prompt_tokens: promptTokens,
               total_tokens: promptTokens + completionTokens,
             };
           }
@@ -523,7 +540,7 @@ export class OpenAIInstrumentation extends InstrumentationBase {
         this._config.exceptionLogger?.(e);
       }
 
-      this._endSpan({ span, type, result });
+      this._endSpan({ result, span, type });
     }
   }
 
@@ -541,25 +558,25 @@ export class OpenAIInstrumentation extends InstrumentationBase {
             ((result as any).data as ChatCompletion).choices[0].logprobs
           );
           this._endSpan({
-            type,
-            span,
             result: (result as any).data as ChatCompletion,
+            span,
+            type,
           });
         } else {
           this._addLogProbsEvent(span, ((result as any).data as Completion).choices[0].logprobs);
           this._endSpan({
-            type,
-            span,
             result: (result as any).data as Completion,
+            span,
+            type,
           });
         }
       } else {
         if (type === "chat") {
           this._addLogProbsEvent(span, (result as ChatCompletion).choices[0].logprobs);
-          this._endSpan({ type, span, result: result as ChatCompletion });
+          this._endSpan({ result: result as ChatCompletion, span, type });
         } else {
           this._addLogProbsEvent(span, (result as Completion).choices[0].logprobs);
-          this._endSpan({ type, span, result: result as Completion });
+          this._endSpan({ result: result as Completion, span, type });
         }
       }
 
@@ -669,8 +686,8 @@ export class OpenAIInstrumentation extends InstrumentationBase {
       if (chatLogprobs.content) {
         result = chatLogprobs.content.map((logprob) => {
           return {
-            token: logprob.token,
             logprob: logprob.logprob,
+            token: logprob.token,
           };
         });
       } else if (completionLogprobs?.tokens && completionLogprobs?.token_logprobs) {
@@ -678,8 +695,8 @@ export class OpenAIInstrumentation extends InstrumentationBase {
           const logprob = completionLogprobs.token_logprobs?.[index];
           if (logprob) {
             result.push({
-              token,
               logprob,
+              token,
             });
           }
         });
@@ -723,35 +740,35 @@ export class OpenAIInstrumentation extends InstrumentationBase {
 
     try {
       if (!client?.baseURL) {
-        return { provider: "OpenAI", modelVendor };
+        return { modelVendor, provider: "OpenAI" };
       }
 
       const baseURL = client.baseURL.toLowerCase();
 
       if (baseURL.includes("azure") || baseURL.includes("openai.azure.com")) {
-        return { provider: "Azure", modelVendor };
+        return { modelVendor, provider: "Azure" };
       }
 
       if (baseURL.includes("openai.com") || baseURL.includes("api.openai.com")) {
-        return { provider: "OpenAI", modelVendor };
+        return { modelVendor, provider: "OpenAI" };
       }
 
       if (baseURL.includes("amazonaws.com") || baseURL.includes("bedrock")) {
-        return { provider: "AWS", modelVendor };
+        return { modelVendor, provider: "AWS" };
       }
 
       if (baseURL.includes("googleapis.com")) {
-        return { provider: "Google", modelVendor };
+        return { modelVendor, provider: "Google" };
       }
 
       if (baseURL.includes("openrouter")) {
-        return { provider: "OpenRouter", modelVendor };
+        return { modelVendor, provider: "OpenRouter" };
       }
 
-      return { provider: "OpenAI", modelVendor };
+      return { modelVendor, provider: "OpenAI" };
     } catch (e) {
       this._diag.debug(`Failed to detect vendor from URL: ${e}`);
-      return { provider: "OpenAI", modelVendor };
+      return { modelVendor, provider: "OpenAI" };
     }
   }
 }
